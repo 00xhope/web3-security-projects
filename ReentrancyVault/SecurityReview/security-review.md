@@ -1,84 +1,114 @@
-# 🔐 Security Review: ReentrancyVault
 
-## Summary
+# Security Review: ReentrancyVault
 
-This report analyzes a deliberately vulnerable smart contract (`ReentrancyVault`) affected by a classic Reentrancy vulnerability (SWC-107). The goal is to demonstrate the risk, exploit path, and secure mitigation strategy using an end-to-end approach.
+This document analyzes a classic **Reentrancy vulnerability** in a smart contract that manages ETH deposits and withdrawals. The report walks through the root cause, exploit scenario, and proposed fix.
 
 ---
 
-## Vulnerability Details
+## Vulnerability Overview
 
-- **Type:** Reentrancy  
-- **SWC-ID:** SWC-107  
-- **Location:** `withdraw()` function  
-- **Severity:** High  
-- **Exploitability:** External contract-controlled fallback
+- **Name**: Reentrancy
+- **SWC-ID**: [SWC-107](https://swcregistry.io/docs/SWC-107)
+- **Severity**: High
+- **Affected Function**: `withdraw()`
+- **Impact**: Unauthorized recursive withdrawals
 
-### Root Cause
+---
 
-The `withdraw()` function sends ETH to `msg.sender` before updating their balance. This allows an attacker to re-enter the function multiple times during the same call and drain funds beyond their balance.
+## Root Cause
 
-### Vulnerable Code
+The `withdraw()` function transfers ETH to the caller using `call`, then updates the user's balance:
 
 ```solidity
-(bool success, ) = msg.sender.call{value: amount}("");
+(bool success, ) = payable(msg.sender).call{value: amount}("");
 require(success, "Transfer failed");
+
 balances[msg.sender] = 0;
 ```
 
-- Balance update comes after the external call
-- Attacker can recursively re-enter `withdraw()` via fallback
+This creates a **vulnerable sequence**:
+1. ETH is sent (external call to untrusted contract)
+2. State is updated only **after** the external call
+
+This allows the external contract to **re-enter** `withdraw()` **before** the balance is reset.
 
 ---
 
-## Exploitation Steps
+## Exploitation Flow
 
-1. Attacker deposits 1 ETH  
-2. Attacker deploys a malicious contract with a fallback that re-enters `withdraw()`  
-3. The recursive call repeats until the vault's balance is drained
-
-### Attack PoC
-
-- Exploit contract: `ReentrancyAttack.sol`  
-- Attack script: `Attack.s.sol`  
-- Foundry test: `ReentrancyVaultAttack.t.sol`
-
----
-
-## Fix & Mitigation
-
-### Fixed Code
+The attacker creates a contract with a `receive()` function that recursively calls `withdraw()`:
 
 ```solidity
+receive() external payable {
+    if (address(vault).balance > 0) {
+        vault.withdraw();
+    }
+}
+```
+
+Because the ETH is sent using:
+
+```solidity
+(bool success, ) = payable(msg.sender).call{value: amount}("");
+```
+
+...and the calldata is empty (`""`), Solidity automatically invokes the attacker's `receive()` function.
+
+This causes repeated calls to `withdraw()` while the original balance is still intact, draining the vault.
+
+---
+
+## `receive()` vs `fallback()`
+
+When ETH is sent to a contract via `call`, Solidity decides which function to trigger:
+
+| Condition                             | Triggered Function |
+|--------------------------------------|--------------------|
+| Empty calldata + `receive()` exists  | `receive()`        |
+| Non-empty calldata                   | `fallback()`       |
+| Empty calldata but no `receive()`    | `fallback()`       |
+
+In this case:
+
+- `call{value: amount}("")` is used → calldata is empty
+- The attack contract defines a `receive()` function
+
+➡️ Therefore, **`receive()`** is executed, enabling reentrancy.
+
+---
+
+## Remediation
+
+To fix the vulnerability, update the internal state **before** making the external call:
+
+```solidity
+uint256 amount = balances[msg.sender];
+require(amount > 0, "No balance to withdraw");
+
 balances[msg.sender] = 0;
-(bool success, ) = msg.sender.call{value: amount}("");
+
+(bool success, ) = payable(msg.sender).call{value: amount}("");
 require(success, "Transfer failed");
 ```
 
-- The user's balance is now cleared before sending ETH  
-- This breaks the reentrancy loop by ensuring state change happens first
-
-### Defense Strategy
-
-- Apply the Check-Effects-Interactions pattern  
-- Consider using OpenZeppelin’s `ReentrancyGuard` for additional safety
-
 ---
 
-## Lessons Learned
+## Additional Mitigations
 
-- Always update internal state before making external calls  
-- Be cautious when using `.call()` with `msg.sender`  
-- Simulate attacks in tests using malicious fallback contracts
+- Use the **Checks-Effects-Interactions** pattern
+- Apply the `ReentrancyGuard` modifier from OpenZeppelin (if suitable)
+- Avoid external calls unless necessary
 
 ---
 
 ## References
 
-- [SWC-107: Reentrancy](https://swcregistry.io/docs/SWC-107)  
-- [Ethernaut - Reentrancy Level](https://ethernaut.openzeppelin.com/level/0xB2c5f7DaD94b2A4f7d7cA6c1C4f35b2a17f49b2f)  
-- [OpenZeppelin - Security Patterns](https://docs.openzeppelin.com/contracts/4.x/security)
+- [SWC-107: Reentrancy](https://swcregistry.io/docs/SWC-107)
+- [Solidity Docs: Reentrancy](https://docs.soliditylang.org/en/latest/security-considerations.html#re-entrancy)
+- [Ethereum Smart Contract Best Practices](https://consensys.github.io/smart-contract-best-practices/)
 
 ---
 
-> Reviewed and documented by [00xhope](https://x.com/00xhope)
+## Reviewer
+
+Security case by [00xhope](https://x.com/00xhope)
