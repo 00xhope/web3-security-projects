@@ -1,0 +1,15 @@
+# --- Compiler & build outputs ---
+out/
+cache/
+
+# Ignore all broadcast outputs
+/broadcast/
+
+# --- Dependency libraries ---
+lib/
+
+# --- Documentation ---
+docs/
+
+# --- Secrets / environment ---
+.env

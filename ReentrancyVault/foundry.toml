@@ -1,0 +1,14 @@
+[profile.default]
+src = "contracts"
+out = "out"
+libs = ["lib"]
+test = "test"
+chain_id = 11155111
+fs_permissions = [{ access = "read", path = "./.env" }]
+
+
+[rpc_endpoints]
+sepolia = "${RPC_URLL}"
+
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
